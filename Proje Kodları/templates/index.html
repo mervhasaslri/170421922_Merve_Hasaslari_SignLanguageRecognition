@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>İşaret Dili Tercümanı</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Pacifico&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</head>
+<body>
+    <!-- Hoş Geldiniz Sayfası -->
+    <div class="welcome-page" id="welcomePage">
+        <div class="typewriter-text"></div>
+        <h1 class="welcome-title">Hoş Geldiniz</h1>
+        <p class="welcome-desc">Devam etmek için herhangi bir yere tıklayın</p>
+    </div>
+
+    <!-- Giriş Sayfası -->
+    <div class="login-page" id="loginPage">
+        <div class="login-container">
+            <h1>İşaret Dili Tercümanı</h1>
+            <div class="btn-container">
+                <button onclick="showPage('loginForm')">Giriş Yap</button>
+                <button onclick="showPage('registerForm')">Üye Ol</button>
+                <button onclick="continueAsGuest()">Misafir Olarak Devam Et</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Giriş Formu -->
+    <div class="page" id="loginForm">
+        <div class="form-container">
+            <div class="profile-title-img-wrapper"><img src="{{ url_for('static', filename='img/profil.png') }}" class="profile-title-img" alt="Profil"></div>
+            <h1 class="login-title">Giriş Yap</h1>
+            <div class="form">
+                <input type="text" id="loginUsername" placeholder="Kullanıcı Adı">
+                <input type="password" id="loginPassword" placeholder="Şifre">
+                <div class="form-buttons">
+                    <button onclick="login()">Giriş Yap</button>
+                    <button onclick="showPage('loginPage')">Geri Dön</button>
+                </div>
+                <div class="forgot-password">
+                    <a href="#" onclick="showPage('forgotPasswordPage')">Şifremi Unuttum</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Şifremi Unuttum Sayfası -->
+    <div class="page" id="forgotPasswordPage">
+        <div class="form-container">
+            <div class="profile-title-img-wrapper"><img src="{{ url_for('static', filename='img/profil.png') }}" class="profile-title-img" alt="Profil"></div>
+            <h1 class="login-title">Şifremi Unuttum</h1>
+            <div class="form">
+                <input type="email" id="resetEmail" placeholder="E-posta Adresi">
+                <div class="form-buttons">
+                    <button onclick="sendResetCode()">Kod Gönder</button>
+                    <button onclick="showPage('loginForm')">Geri Dön</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Doğrulama Kodu Sayfası -->
+    <div class="page" id="verificationPage">
+        <div class="form-container">
+            <div class="profile-title-img-wrapper"><img src="{{ url_for('static', filename='img/profil.png') }}" class="profile-title-img" alt="Profil"></div>
+            <h1 class="login-title">Doğrulama Kodu</h1>
+            <div class="form">
+                <input type="text" id="verificationCode" placeholder="6 Haneli Kodu Girin" maxlength="6">
+                <div class="form-buttons">
+                    <button onclick="verifyCode()">Doğrula</button>
+                    <button onclick="showPage('forgotPasswordPage')">Geri Dön</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Yeni Şifre Sayfası -->
+    <div class="page" id="newPasswordPage">
+        <div class="form-container">
+            <div class="profile-title-img-wrapper"><img src="{{ url_for('static', filename='img/profil.png') }}" class="profile-title-img" alt="Profil"></div>
+            <h1 class="login-title">Yeni Şifre</h1>
+            <div class="form">
+                <input type="password" id="newPassword" placeholder="Yeni Şifre">
+                <div class="password-info">En az bir büyük harf, bir sayı ve bir sembol içermelidir.</div>
+                <div id="newPasswordStrength" class="password-strength"></div>
+                <input type="password" id="confirmNewPassword" placeholder="Yeni Şifreyi Tekrarla">
+                <div class="form-buttons">
+                    <button onclick="resetPassword()">Şifreyi Değiştir</button>
+                    <button onclick="showPage('verificationPage')">Geri Dön</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Kayıt Formu -->
+    <div class="page" id="registerForm">
+        <div class="form-container">
+            <div class="profile-title-img-wrapper"><img src="{{ url_for('static', filename='img/profil.png') }}" class="profile-title-img" alt="Profil"></div>
+            <h1 class="login-title">Üye Ol</h1>
+            <div class="form">
+                <input type="text" id="registerUsername" placeholder="Kullanıcı Adı">
+                <input type="email" id="registerEmail" placeholder="E-posta Adresi">
+                <input type="password" id="registerPassword" placeholder="Şifre">
+                <div class="password-info">En az bir büyük harf, bir sayı ve bir sembol içermelidir.</div>
+                <div id="passwordStrength" class="password-strength"></div>
+                <input type="password" id="confirmPassword" placeholder="Şifreyi Tekrarla">
+                <div class="form-buttons">
+                    <button onclick="register()">Kaydol</button>
+                    <button onclick="showPage('loginPage')">Geri Dön</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Kamera Sayfası -->
+    <div class="page" id="cameraPage">
+        <button id="homeBtn-camera" class="home-btn" onclick="goHome()">Ana Sayfa</button>
+        <div class="top-right">
+            <div id="userDropdown" class="user-dropdown">
+                <button id="userButton" class="user-btn">
+                    <img src="{{ url_for('static', filename='img/profil.png') }}" alt="Profil" class="profile-img">
+                    <span class="holo-text" id="userNameText">Kullanıcı Adı</span>
+                    <i class="fa fa-chevron-down"></i>
+                </button>
+                <div id="dropdownMenu" class="dropdown-menu">
+                    <!-- Menü içeriği JS ile eklenecek -->
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="camera-container">
+                <div class="camera-controls">
+                    <label class="switch">
+                        <input type="checkbox" id="cameraToggle">
+                        <span class="slider round"></span>
+                    </label>
+                    <span class="camera-status" id="cameraStatus">Kamera Kapalı</span>
+                </div>
+                <video id="video" autoplay playsinline></video>
+                <div class="controls">
+                    <button id="predictButton" class="predict-button">Tahmin Et</button>
+                    <div id="countdown" class="countdown"></div>
+                </div>
+            </div>
+            <div class="text-container">
+                <div id="predictionsList" class="predictions-list">
+                    <h3>Tahminler</h3>
+                </div>
+                <textarea id="textOutput" readonly></textarea>
+                <button id="convertToSentence" class="convert-button">Cümleye Çevir</button>
+                <button id="speakText" class="speak-button">
+                    <i class="fas fa-volume-up"></i> Seslendir
+                </button>
+                <div class="language-wrapper">
+                    <div class="language-toggle turkish" onclick="toggleLanguage()">
+                        <span>Türkçe</span>
+                        <span>English</span>
+                        <div class="toggle-circle"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Profil Düzenleme Sayfası -->
+    <div class="page" id="profilePage">
+        <button id="backToCameraBtn" class="back-to-camera-btn" onclick="showPage('cameraPage')">Geri Dön</button>
+        <button id="homeBtn-profile" class="home-btn" onclick="goHome()">Ana Sayfa</button>
+        <div class="form-container">
+            <h1>Profil Bilgileri</h1>
+            <div class="form">
+                <label for="editUsername">Kullanıcı Adı</label>
+                <input type="text" id="editUsername" placeholder="Kullanıcı Adı">
+                <label for="editEmail">E-posta Adresi</label>
+                <input type="email" id="editEmail" placeholder="E-posta Adresi">
+                <label for="editPassword">Yeni Şifre</label>
+                <input type="password" id="editPassword" placeholder="Yeni Şifre (değiştirmek istemiyorsan boş bırak)">
+                <div id="editPasswordStrength" class="password-strength"></div>
+                <label for="currentPassword">Güncel Şifre</label>
+                <input type="password" id="currentPassword" placeholder="Güncel Şifre">
+                <button id="saveProfileBtn" class="convert-button">Kaydet</button>
+            </div>
+        </div>
+        <div id="profileSuccessOverlay" class="profile-success-overlay">
+            <div id="profileSuccess" class="profile-success">Değişiklikler başarıyla kaydedildi!</div>
+        </div>
+    </div>
+</body>
+</html> 
