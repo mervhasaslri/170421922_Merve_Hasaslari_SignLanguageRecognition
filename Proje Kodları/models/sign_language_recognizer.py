@@ -10,56 +10,56 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.metrics import roc_curve, auc
 from tensorflow.keras.layers import MultiHeadAttention, LayerNormalization, Add, Flatten
 from tensorflow.keras import regularizers
-from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@tf.keras.utils.register_keras_serializable()
-class FixedLSTM(tf.keras.layers.LSTM):
-    @classmethod
-    def from_config(cls, config):
-        if 'time_major' in config:
-            del config['time_major']
-        return super().from_config(config)
-
-@tf.keras.utils.register_keras_serializable()
-class FixedCategoricalCrossentropy(tf.keras.losses.CategoricalCrossentropy):
-    @classmethod
-    def from_config(cls, config):
-        if 'reduction' in config and config['reduction'] == 'auto':
-            config['reduction'] = tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE
-        return super().from_config(config)
-
 class SignLanguageRecognizer:
     """
     İşaret dili tanıma için hibrit CNN-LSTM modeli.
+    
+    Attributes:
+        train_landmarks_dir (Path): Eğitim landmark JSON dosyalarının bulunduğu dizin
+        val_landmarks_dir (Path): Validation landmark JSON dosyalarının bulunduğu dizin
+        test_landmarks_dir (Path): Test landmark JSON dosyalarının bulunduğu dizin
+        train_labels_path (Path): Eğitim etiketlerinin CSV dosya yolu
+        val_labels_path (Path): Validation etiketlerinin CSV dosya yolu
+        test_labels_path (Path): Test etiketlerinin CSV dosya yolu
+        class_map_path (Path): Sınıf eşleştirmelerinin CSV dosya yolu
+        num_classes (int): Toplam sınıf sayısı
+        sequence_length (int): İşlenecek maksimum frame sayısı
+        frame_features (int): Her frame için özellik sayısı
+        model (tf.keras.Model): Eğitilmiş model
     """
     
     def __init__(self, config):
-        # Only require these paths if we're doing training
-        if 'train_landmarks_dir' in config:
-            self.train_landmarks_dir = Path(config['train_landmarks_dir'])
-            self.val_landmarks_dir = Path(config['val_landmarks_dir'])
-            self.test_landmarks_dir = Path(config['test_landmarks_dir'])
-            self.train_labels = pd.read_csv(config['train_labels_path'])
-            self.val_labels = pd.read_csv(config['val_labels_path'])
-            self.test_labels = pd.read_csv(config['test_labels_path'])
-        else:
-            # Real-time prediction mode
-            self.train_landmarks_dir = None
-            self.val_landmarks_dir = None
-            self.test_landmarks_dir = None
-            self.train_labels = None
-            self.val_labels = None
-            self.test_labels = None
-        
+        """
+        Args:
+            config (dict): Model konfigürasyonu içeren sözlük
+                - train_landmarks_dir: Eğitim landmark dosyaları dizini
+                - val_landmarks_dir: Validation landmark dosyaları dizini
+                - test_landmarks_dir: Test landmark dosyaları dizini
+                - train_labels_path: Eğitim etiketleri dosya yolu
+                - val_labels_path: Validation etiketleri dosya yolu
+                - test_labels_path: Test etiketleri dosya yolu
+                - class_map_path: Sınıf eşleştirmeleri dosya yolu
+                - sequence_length: Maksimum frame sayısı (varsayılan: 30)
+                - batch_size: Batch boyutu (varsayılan: 32)
+                - epochs: Epoch sayısı (varsayılan: 100)
+                - learning_rate: Öğrenme oranı (varsayılan: 0.0003)
+        """
+        self.train_landmarks_dir = Path(config['train_landmarks_dir'])
+        self.val_landmarks_dir = Path(config['val_landmarks_dir'])
+        self.test_landmarks_dir = Path(config['test_landmarks_dir'])
+        self.train_labels = pd.read_csv(config['train_labels_path'])
+        self.val_labels = pd.read_csv(config['val_labels_path'])
+        self.test_labels = pd.read_csv(config['test_labels_path'])
         self.class_map = pd.read_csv(config['class_map_path'])
         self.num_classes = len(self.class_map)
         
         # Model parametreleri
         self.sequence_length = config.get('sequence_length', 30)
-        self.frame_features = config.get('frame_features', 195)  # (21 el noktası * 3 + 33 poz noktası * 4)
+        self.frame_features = 195  # (21 el noktası * 3 + 33 poz noktası * 4)
         self.batch_size = config.get('batch_size', 32)
         self.epochs = config.get('epochs', 100)
         self.learning_rate = config.get('learning_rate', 0.0003)
@@ -84,179 +84,184 @@ class SignLanguageRecognizer:
             logger.error(f"Error loading landmarks for {video_name}: {str(e)}")
             return None
 
-    def prepare_sequence_data(self, landmarks_data, video_name=None, class_id=None, augment=True, low_sample_classes=None):
+    def prepare_sequence_data(self, landmarks_data, augment=True):
         """Landmark verilerini model için uygun formata dönüştür ve veri augmentasyonu uygula"""
         if not landmarks_data:
             return None
             
         frames = list(landmarks_data['frames'].values())
-        frame_keys = list(landmarks_data['frames'].keys())
-
-        # Eksik frame sayısı %30'dan fazla ise videoyu atla
-        if augment:
-            valid_frames = [f for f in frames if f['hands'] and f['pose']]
-            if len(valid_frames) < self.sequence_length * 0.7:
-                return None  # Yetersiz bilgi, atla
-
+        
         # Sabit uzunlukta sekans oluştur
         if len(frames) > self.sequence_length:
             indices = np.linspace(0, len(frames)-1, self.sequence_length, dtype=int)
             frames = [frames[i] for i in indices]
-            frame_keys = [frame_keys[i] for i in indices]
         else:
             last_frame = frames[-1] if frames else {'hands': [], 'pose': None}
-            last_key = frame_keys[-1] if frame_keys else '00000'
             frames.extend([last_frame] * (self.sequence_length - len(frames)))
-            frame_keys.extend([last_key] * (self.sequence_length - len(frame_keys)))
 
-        is_low_sample = (low_sample_classes is not None and class_id in low_sample_classes)
-        noise_level = 0.02 * (2 if is_low_sample else 1)
-        temporal_shift_prob = 0.8 if is_low_sample else 0.5
-        frame_zero_prob = 0.6 if is_low_sample else 0.3
-
-        # Temporal shift augmentasyonu
-        if augment and np.random.random() < temporal_shift_prob:
+        # Augmentasyon parametreleri
+        noise_level = 0.02
+        
+        # Veri augmentasyonu (eğitim sırasında)
+        if augment and np.random.random() < 0.5:
+            # Temporal shift: ±2 frame kaydırma
             shift = np.random.randint(-2, 3)
             if shift > 0:
                 frames = frames[shift:] + frames[:shift]
-                frame_keys = frame_keys[shift:] + frame_keys[:shift]
             elif shift < 0:
                 frames = frames[shift:] + frames[:shift]
-                frame_keys = frame_keys[shift:] + frame_keys[:shift]
-
+            
+        # Her frame için özellik vektörü oluştur
         sequence = []
-        for i, frame in enumerate(frames):
+        for frame in frames:
             features = []
+            
             # El landmarklarını ekle
             if frame['hands']:
                 hand = frame['hands'][0]
                 for landmark in hand:
                     coords = [landmark['x'], landmark['y'], landmark['z']]
+                    # Noise ekleme (augmentation aktifse)
                     if augment and np.random.random() < 0.5:
                         coords = [c + np.random.normal(0, noise_level) for c in coords]
                     features.extend(coords)
             else:
-                features.extend([0.0] * (21 * 3))
+                # El landmarkları yoksa sıfırlarla doldur
+                features.extend([0.0] * (21 * 3))  # 21 el noktası * 3 koordinat
+            
             # Poz landmarklarını ekle
             if frame['pose']:
                 for landmark in frame['pose']:
                     coords = [landmark['x'], landmark['y'], landmark['z'], landmark['visibility']]
+                    # Noise ekleme (augmentation aktifse)
                     if augment and np.random.random() < 0.5:
                         coords = [c + np.random.normal(0, noise_level) if i < 3 else c for i, c in enumerate(coords)]
                     features.extend(coords)
             else:
-                features.extend([0.0] * (33 * 4))
+                # Poz landmarkları yoksa sıfırlarla doldur
+                features.extend([0.0] * (33 * 4))  # 33 poz noktası * 4 özellik
+            
             sequence.append(features)
-
+            
         # Eksik frame simülasyonu (augmentation aktifse)
-        if augment and np.random.random() < frame_zero_prob:
+        if augment and np.random.random() < 0.3:
+            # Rastgele 1-3 frame'i sıfırla
             num_frames_to_zero = np.random.randint(1, 4)
             frames_to_zero = np.random.choice(len(sequence), num_frames_to_zero, replace=False)
             for idx in frames_to_zero:
                 sequence[idx] = [0.0] * len(sequence[idx])
-
+        
         return np.array(sequence)
 
+    def create_model(self):
+        """Model mimarisi: Basitleştirilmiş Bidirectional LSTM (2 katman) + GlobalAveragePooling1D + Dense"""
+        input_shape = (self.sequence_length, self.frame_features)
+        inputs = tf.keras.Input(shape=input_shape)
+
+        # 1. İlk Bidirectional LSTM katmanı (daha küçük)
+        x = tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(128, return_sequences=True,
+                               kernel_regularizer=regularizers.l2(1e-3))
+        )(inputs)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.4)(x)
+
+        # 2. İkinci Bidirectional LSTM katmanı (daha küçük)
+        x = tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(64, return_sequences=True,
+                               kernel_regularizer=regularizers.l2(1e-3))
+        )(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.4)(x)
+
+        # 3. Global Average Pooling
+        x = tf.keras.layers.GlobalAveragePooling1D()(x)
+
+        # 4. Dense Layer
+        x = tf.keras.layers.Dense(128, activation='relu',
+                               kernel_regularizer=regularizers.l2(1e-3))(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.4)(x)
+
+        # 5. Output Layer
+        outputs = tf.keras.layers.Dense(self.num_classes, activation='softmax',
+                                     kernel_regularizer=regularizers.l2(1e-3))(x)
+
+        self.model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        self.model.summary()
+        return self.model
+
     def prepare_dataset(self):
-        """Eğitim verilerini hazırla (sadece landmark)"""
-        X_train, y_train = [], []
-        X_val, y_val = [], []
-        X_test, y_test = [], []
-        low_sample_classes = self.get_low_sample_classes(threshold=0.5)
-        # Eğitim verileri
+        """Eğitim verilerini hazırla"""
+        X_train = []
+        y_train = []
+        X_val = []
+        y_val = []
+        X_test = []
+        y_test = []
+        
+        # Eğitim verilerini yükle
         for _, row in self.train_labels.iterrows():
             video_name = row[0]
             class_id = row[1]
+            
             landmarks_data = self.load_landmarks_data(video_name, 'train')
             if landmarks_data is None:
                 continue
-            sequence = self.prepare_sequence_data(landmarks_data, video_name=video_name, class_id=class_id, augment=True, low_sample_classes=low_sample_classes)
+                
+            sequence = self.prepare_sequence_data(landmarks_data)
             if sequence is None:
                 continue
+                
             X_train.append(sequence)
             y_train.append(class_id)
-        # Validation verileri
+        
+        # Validation verilerini yükle
         for _, row in self.val_labels.iterrows():
             video_name = row[0]
             class_id = row[1]
+            
             landmarks_data = self.load_landmarks_data(video_name, 'val')
             if landmarks_data is None:
                 continue
-            sequence = self.prepare_sequence_data(landmarks_data, video_name=video_name, class_id=class_id, augment=False)
+                
+            sequence = self.prepare_sequence_data(landmarks_data)
             if sequence is None:
                 continue
+                
             X_val.append(sequence)
             y_val.append(class_id)
-        # Test verileri
+        
+        # Test verilerini yükle
         for _, row in self.test_labels.iterrows():
             video_name = row[0]
             class_id = row[1]
+            
             landmarks_data = self.load_landmarks_data(video_name, 'test')
             if landmarks_data is None:
                 continue
-            sequence = self.prepare_sequence_data(landmarks_data, video_name=video_name, class_id=class_id, augment=False)
+                
+            sequence = self.prepare_sequence_data(landmarks_data)
             if sequence is None:
                 continue
+                
             X_test.append(sequence)
             y_test.append(class_id)
+        
+        # Numpy dizilerine dönüştür
         X_train = np.array(X_train)
         y_train = to_categorical(y_train, num_classes=self.num_classes)
         X_val = np.array(X_val)
         y_val = to_categorical(y_val, num_classes=self.num_classes)
         X_test = np.array(X_test)
         y_test = to_categorical(y_test, num_classes=self.num_classes)
+        
+        # CNN için reshape
+        X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], X_train.shape[2], 1)
+        X_val = X_val.reshape(X_val.shape[0], X_val.shape[1], X_val.shape[2], 1)
+        X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], X_test.shape[2], 1)
+        
         return X_train, X_val, X_test, y_train, y_val, y_test
-
-    def create_model(self):
-        """Model: Landmark + RGB (Conv2D) fusion, sequence modeling, classification"""
-        input_shape_landmark = (self.sequence_length, self.frame_features)
-        input_shape_rgb = (self.sequence_length, 64, 64, 3)
-
-        # Landmark input
-        landmark_input = tf.keras.Input(shape=input_shape_landmark, name="landmark_input")
-        # RGB input
-        rgb_input = tf.keras.Input(shape=input_shape_rgb, name="rgb_input")
-
-        # Landmark feature projection
-        x_lm = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(64, activation='relu'))(landmark_input)
-        x_lm = tf.keras.layers.BatchNormalization()(x_lm)
-
-        # RGB feature extraction (her frame için Conv2D)
-        def rgb_cnn_block():
-            model = tf.keras.Sequential([
-                tf.keras.layers.Conv2D(16, 3, activation='relu', padding='same'),
-                tf.keras.layers.MaxPooling2D(2),
-                tf.keras.layers.Conv2D(32, 3, activation='relu', padding='same'),
-                tf.keras.layers.MaxPooling2D(2),
-                tf.keras.layers.Conv2D(64, 3, activation='relu', padding='same'),
-                tf.keras.layers.GlobalAveragePooling2D(),
-                tf.keras.layers.Dense(64, activation='relu')
-            ])
-            return model
-        x_rgb = tf.keras.layers.TimeDistributed(rgb_cnn_block())(rgb_input)
-        x_rgb = tf.keras.layers.BatchNormalization()(x_rgb)
-
-        # Landmark ve RGB feature'larını birleştir
-        x = tf.keras.layers.Concatenate(axis=-1)([x_lm, x_rgb])  # (batch, seq, 128)
-        x = tf.keras.layers.Dropout(0.3)(x)
-
-        # Sequence modeling (ör: BiLSTM)
-        x = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64, return_sequences=True))(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        x = tf.keras.layers.Dropout(0.3)(x)
-
-        # Temporal pooling
-        x = tf.keras.layers.GlobalAveragePooling1D()(x)
-
-        # Dense + output
-        x = tf.keras.layers.Dense(128, activation='relu')(x)
-        x = tf.keras.layers.BatchNormalization()(x)
-        x = tf.keras.layers.Dropout(0.3)(x)
-        outputs = tf.keras.layers.Dense(self.num_classes, activation='softmax')(x)
-
-        self.model = tf.keras.Model(inputs=[landmark_input, rgb_input], outputs=outputs)
-        self.model.summary()
-        return self.model
 
     def train(self, save_dir="models"):
         """Modeli eğit ve kaydet"""
@@ -411,25 +416,30 @@ class SignLanguageRecognizer:
         
         return history
 
-    def predict(self):
-        if len(self.landmark_buffer) < self.sequence_length:
-            print("Yetersiz frame, tahmin yapılmadı.")
+    def predict(self, video_name):
+        """Bir video için tahmin yap"""
+        if self.model is None:
+            raise ValueError("Model has not been trained or loaded yet")
+            
+        landmarks_data = self.load_landmarks_data(video_name)
+        if landmarks_data is None:
             return None
-
-        sequence = np.array(self.landmark_buffer)
-        dummy_rgb = np.zeros((1, self.sequence_length, 64, 64, 3), dtype=np.float32)
-        predictions = self.model.predict([np.expand_dims(sequence, axis=0), dummy_rgb])
+            
+        sequence = self.prepare_sequence_data(landmarks_data)
+        if sequence is None:
+            return None
+            
+        # Tahmin
+        sequence = sequence.reshape(1, self.sequence_length, self.frame_features, 1)
+        predictions = self.model.predict(sequence)
+        
+        # En yüksek olasılıklı sınıfı bul
         predicted_class = np.argmax(predictions[0])
         confidence = predictions[0][predicted_class]
-
-        print(f"Model tahmini: {predicted_class}, Güven: {confidence:.2f}")
-
+        
+        # Sınıf bilgilerini al
         class_info = self.class_map.iloc[predicted_class]
-        if confidence < self.confidence_threshold:
-            print(f"Güven eşiği ({self.confidence_threshold}) altında!")
-            return None
-        now = datetime.now().strftime('%H:%M:%S')
-        print(f"Tahmin edilen işaret: {class_info['TR']} ({class_info['EN']}) - Güven: {confidence:.2f} - Saat: {now}")
+        
         return {
             'class_id': predicted_class,
             'confidence': float(confidence),
@@ -438,13 +448,6 @@ class SignLanguageRecognizer:
         }
 
     def load_model(self, model_path):
-        """Yüksek ağırlıklı modeli yükle"""
-        logger.info(f"Yüksek ağırlıklı model yükleniyor: {model_path}")
-        self.model = tf.keras.models.load_model(
-            model_path,
-            custom_objects={
-                'LSTM': FixedLSTM,
-                'CategoricalCrossentropy': FixedCategoricalCrossentropy
-            }
-        )
+        """Eğitilmiş modeli yükle"""
+        self.model = tf.keras.models.load_model(model_path)
         logger.info(f"Model loaded from {model_path}") 
